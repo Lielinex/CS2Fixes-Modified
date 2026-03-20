@@ -30,6 +30,7 @@
 using ordered_json = nlohmann::ordered_json;
 
 extern CConVar<bool> g_cvarEnableZR;
+extern CConVar<bool> g_cvarZRPVEMode;
 
 #define ZR_PREFIX " \4[Zombie:Reborn]\1 "
 #define HUMAN_CLASS_KEY_NAME "zr_human_class"

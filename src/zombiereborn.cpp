@@ -60,6 +60,7 @@ CZRPlayerClassManager* g_pZRPlayerClassManager = nullptr;
 ZRWeaponConfig* g_pZRWeaponConfig = nullptr;
 ZRHitgroupConfig* g_pZRHitgroupConfig = nullptr;
 
+CConVar<bool> g_cvarZRPVEMode("zr_pve_mode", FCVAR_NONE, "Enable PVE mode: only bots become zombies, players remain human", false);
 CConVar<bool> g_cvarEnableZR("zr_enable", FCVAR_NONE, "Whether to enable ZR features", false);
 CConVar<float> g_cvarMaxZteleDistance("zr_ztele_max_distance", FCVAR_NONE, "Maximum distance players are allowed to move after starting ztele", 150.0f, true, 0.0f, false, 0.0f);
 CConVar<bool> g_cvarZteleHuman("zr_ztele_allow_humans", FCVAR_NONE, "Whether to allow humans to use ztele", false);
@@ -909,6 +910,20 @@ void ZR_OnRoundPrestart(IGameEvent* pEvent)
 		if (pPawn)
 			pPawn->m_bTakesDamage = false;
 	}
+
+	// if PVE Mode On£ºreset all spectators to humans.
+	if (g_cvarZRPVEMode.Get() && GetGlobals())
+	{
+		for (int i = 0; i < GetGlobals()->maxClients; i++)
+		{
+			CCSPlayerController* pController = CCSPlayerController::FromSlot(i);
+			if (!pController || pController->IsBot() || !pController->IsConnected())
+				continue;
+
+			if (pController->m_iTeamNum() == CS_TEAM_SPECTATOR)
+				pController->SwitchTeam(CS_TEAM_CT);
+		}
+	}
 }
 
 void SetupRespawnToggler()
@@ -959,6 +974,35 @@ void ZR_OnRoundStart(IGameEvent* pEvent)
 
 void ZR_OnPlayerSpawn(CCSPlayerController* pController)
 {
+	// if PVE Mode On£ºplayer as humans, bots as zombies
+	if (g_cvarZRPVEMode.Get())
+	{
+		if (pController->IsBot())
+		{
+			// bots
+			pController->SwitchTeam(CS_TEAM_T);
+			CHandle<CCSPlayerController> handle = pController->GetHandle();
+			CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
+				CCSPlayerController* pController = handle.Get();
+				if (!pController) return -1.0f;
+				ZR_Infect(pController, pController, true);
+				return -1.0f;
+			});
+		}
+		else
+		{
+			// humans
+			pController->SwitchTeam(CS_TEAM_CT);
+			CHandle<CCSPlayerController> handle = pController->GetHandle();
+			CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
+				CCSPlayerController* pController = handle.Get();
+				if (!pController) return -1.0f;
+				ZR_Cure(pController);
+				return -1.0f;
+			});
+		}
+		return;
+	}
 	// delay infection a bit
 	bool bInfect = g_ZRRoundState == EZRRoundState::POST_INFECTION;
 
@@ -1268,12 +1312,51 @@ void ZR_InitialInfection()
 	if (!GetGlobals())
 		return;
 
+	    // if PVE Mode On£ºinfect all alive bots as mother zombies, and skip the rest of the infection process
+	if (g_cvarZRPVEMode.Get())
+	{
+		// collect all alive bots first to avoid potential issues of iterating and infecting at the same time
+		CUtlVector<CCSPlayerController*> pRobotControllers;
+		for (int i = 0; i < GetGlobals()->maxClients; i++)
+		{
+			CCSPlayerController* pController = CCSPlayerController::FromSlot(i);
+			if (!pController || !pController->IsConnected() || !pController->IsBot())
+				continue;
+
+			CCSPlayerPawn* pPawn = (CCSPlayerPawn*)pController->GetPawn();
+			if (!pPawn || !pPawn->IsAlive())
+				continue;
+
+			// skip zombies
+			if (pController->m_iTeamNum() == CS_TEAM_T)
+				continue;
+
+			pRobotControllers.AddToTail(pController);
+		}
+
+		// infect all alive bots as mother zombies
+		for (int i = 0; i < pRobotControllers.Count(); i++)
+			ZR_Infect(pRobotControllers[i], pRobotControllers[i], true); // self-infect to make them zombies
+
+		if (g_cvarRespawnDelay.Get() < 0.0f)
+			g_bRespawnEnabled = false;
+
+		SendHudMessageAll(4, EHudPriority::InfectionCountdown, "First infection has started!");
+		ClientPrintAll(HUD_PRINTTALK, ZR_PREFIX "First infection has started! Good luck, survivors!");
+		g_ZRRoundState = EZRRoundState::POST_INFECTION;
+		return;
+	}
+
 	// mz infection candidates
 	CUtlVector<CCSPlayerController*> pCandidateControllers;
 	for (int i = 0; i < GetGlobals()->maxClients; i++)
 	{
 		CCSPlayerController* pController = CCSPlayerController::FromSlot(i);
 		if (!pController || !pController->IsConnected() || pController->m_iTeamNum() != CS_TEAM_CT)
+			continue;
+
+		// PVE Mode£¬only bots
+		if (g_cvarZRPVEMode.Get() && !pController->IsBot())
 			continue;
 
 		CCSPlayerPawn* pPawn = (CCSPlayerPawn*)pController->GetPawn();
@@ -1286,6 +1369,13 @@ void ZR_InitialInfection()
 	if (g_cvarInfectSpawnMZRatio.Get() <= 0)
 	{
 		Warning("Invalid Mother Zombie Ratio!!!");
+		return;
+	}
+	
+	// if PVE mode On and no bots, end stage of infection 
+	if (g_cvarZRPVEMode.Get() && pCandidateControllers.Count() == 0)
+	{
+		g_ZRRoundState = EZRRoundState::POST_INFECTION;
 		return;
 	}
 
@@ -1423,6 +1513,13 @@ bool ZR_Hook_OnTakeDamage_Alive(CTakeDamageInfo* pInfo, CCSPlayerPawn* pVictimPa
 
 	CCSPlayerController* pAttackerController = CCSPlayerController::FromPawn(pAttackerPawn);
 	CCSPlayerController* pVictimController = CCSPlayerController::FromPawn(pVictimPawn);
+	
+	// if PVE mode On, player can't be infected
+    if (g_cvarZRPVEMode.Get() && !pVictimController->IsBot())
+    {
+        return true; // nullify the damage
+    }
+	
 	const char* pszAbilityClass = pInfo->m_hAbility.Get() ? pInfo->m_hAbility.Get()->GetClassname() : "";
 	if (pAttackerPawn->m_iTeamNum() == CS_TEAM_T && pVictimPawn->m_iTeamNum() == CS_TEAM_CT && !V_strncmp(pszAbilityClass, "weapon_knife", 12))
 	{
@@ -1536,6 +1633,13 @@ void ZR_Hook_ClientPutInServer(CPlayerSlot slot, char const* pszName, int type, 
 	if (!pController)
 		return;
 
+	// if PVE mode On£ºhuman player will be put in spectator team when they join server.
+	if (g_cvarZRPVEMode.Get() && !pController->IsBot())
+	{
+		pController->SwitchTeam(CS_TEAM_SPECTATOR);
+		return;
+	}
+
 	SpawnPlayer(pController);
 }
 
@@ -1617,6 +1721,13 @@ void ZR_OnPlayerDeath(IGameEvent* pEvent)
 	CCSPlayerPawn* pVictimPawn = (CCSPlayerPawn*)pVictimController->GetPawn();
 	if (!pVictimPawn)
 		return;
+
+	    // if PVE mode On£ºchange to spectator team for human player
+	if (g_cvarZRPVEMode.Get() && !pVictimController->IsBot())
+	{
+		pVictimController->SwitchTeam(CS_TEAM_SPECTATOR);
+		return;
+	}
 
 	ZR_CheckTeamWinConditions(pVictimPawn->m_iTeamNum() == CS_TEAM_T ? CS_TEAM_CT : CS_TEAM_T);
 

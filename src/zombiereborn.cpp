@@ -911,20 +911,6 @@ void ZR_OnRoundPrestart(IGameEvent* pEvent)
 		if (pPawn)
 			pPawn->m_bTakesDamage = false;
 	}
-
-	// if PVE Mode On：reset all spectators to humans.
-	if (g_cvarZRPVEMode.Get() && GetGlobals())
-	{
-		for (int i = 0; i < GetGlobals()->maxClients; i++)
-		{
-			CCSPlayerController* pController = CCSPlayerController::FromSlot(i);
-			if (!pController || pController->IsBot() || !pController->IsConnected())
-				continue;
-
-			if (pController->m_iTeamNum() == CS_TEAM_SPECTATOR)
-				pController->SwitchTeam(CS_TEAM_CT);
-		}
-	}
 }
 
 void SetupRespawnToggler()
@@ -975,24 +961,39 @@ void ZR_OnRoundStart(IGameEvent* pEvent)
 
 void ZR_OnPlayerSpawn(CCSPlayerController* pController)
 {
-	// if PVE Mode On：player as humans, bots as zombies
+	// PVE 模式：玩家永远是 CT，机器人在感染阶段后变成 T
 	if (g_cvarZRPVEMode.Get())
 	{
 		if (pController->IsBot())
 		{
-			// bots
-			pController->SwitchTeam(CS_TEAM_T);
-			CHandle<CCSPlayerController> handle = pController->GetHandle();
-			CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
-				CCSPlayerController* pController = handle.Get();
-				if (!pController) return -1.0f;
-				ZR_Infect(pController, pController, true);
-				return -1.0f;
-			});
+			// 如果已经进入感染阶段（感染已发生），机器人应该为僵尸（T）
+			if (g_ZRRoundState == EZRRoundState::POST_INFECTION)
+			{
+				pController->SwitchTeam(CS_TEAM_T);
+				CHandle<CCSPlayerController> handle = pController->GetHandle();
+				CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
+					CCSPlayerController* pController = handle.Get();
+					if (!pController) return -1.0f;
+					ZR_Infect(pController, pController, true);
+					return -1.0f;
+				});
+			}
+			else // 尚未感染，机器人保持人类
+			{
+				pController->SwitchTeam(CS_TEAM_CT);
+				// 治愈（如果需要）
+				CHandle<CCSPlayerController> handle = pController->GetHandle();
+				CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
+					CCSPlayerController* pController = handle.Get();
+					if (!pController) return -1.0f;
+					ZR_Cure(pController);
+					return -1.0f;
+				});
+			}
 		}
 		else
 		{
-			// humans
+			// 玩家总是 CT
 			pController->SwitchTeam(CS_TEAM_CT);
 			CHandle<CCSPlayerController> handle = pController->GetHandle();
 			CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
@@ -1004,6 +1005,7 @@ void ZR_OnPlayerSpawn(CCSPlayerController* pController)
 		}
 		return;
 	}
+
 	// delay infection a bit
 	bool bInfect = g_ZRRoundState == EZRRoundState::POST_INFECTION;
 
@@ -1643,7 +1645,11 @@ bool ZR_Detour_CEntityIdentity_AcceptInput(CEntityIdentity* pThis, CUtlSymbolLar
 
 void SpawnPlayer(CCSPlayerController* pController)
 {
-	pController->ChangeTeam(g_ZRRoundState == EZRRoundState::POST_INFECTION ? CS_TEAM_T : CS_TEAM_CT);
+	// PVE 模式下，玩家永远加入 CT 队（人类）
+	if (g_cvarZRPVEMode.Get())
+		pController->ChangeTeam(CS_TEAM_CT);
+	else
+		pController->ChangeTeam(g_ZRRoundState == EZRRoundState::POST_INFECTION ? CS_TEAM_T : CS_TEAM_CT);
 
 	// Make sure the round ends if spawning into an empty server
 	if (!ZR_IsTeamAlive(CS_TEAM_CT) && !ZR_IsTeamAlive(CS_TEAM_T) && g_ZRRoundState != EZRRoundState::ROUND_END)
@@ -1671,13 +1677,6 @@ void ZR_Hook_ClientPutInServer(CPlayerSlot slot, char const* pszName, int type, 
 	CCSPlayerController* pController = CCSPlayerController::FromSlot(slot);
 	if (!pController)
 		return;
-
-	// if PVE mode On：human player will be put in spectator team when they join server.
-	if (g_cvarZRPVEMode.Get() && !pController->IsBot())
-	{
-		pController->SwitchTeam(CS_TEAM_SPECTATOR);
-		return;
-	}
 
 	SpawnPlayer(pController);
 }
@@ -1760,13 +1759,6 @@ void ZR_OnPlayerDeath(IGameEvent* pEvent)
 	CCSPlayerPawn* pVictimPawn = (CCSPlayerPawn*)pVictimController->GetPawn();
 	if (!pVictimPawn)
 		return;
-
-	    // if PVE mode On：change to spectator team for human player
-	if (g_cvarZRPVEMode.Get() && !pVictimController->IsBot())
-	{
-		pVictimController->SwitchTeam(CS_TEAM_SPECTATOR);
-		return;
-	}
 
 	ZR_CheckTeamWinConditions(pVictimPawn->m_iTeamNum() == CS_TEAM_T ? CS_TEAM_CT : CS_TEAM_T);
 

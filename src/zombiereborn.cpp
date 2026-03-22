@@ -95,11 +95,12 @@ CConVar<float> g_cvarInfectShakeFrequency("zr_infect_shake_frequency", FCVAR_NON
 CConVar<float> g_cvarInfectShakeDuration("zr_infect_shake_duration", FCVAR_NONE, "Duration of shaking effect", 5.0f, true, 0.0f, false, 0.0f);
 CConVar<float> g_cvarDamageCashScale("zr_damage_cash_scale", FCVAR_NONE, "Multiplier on cash given when damaging zombies (0.0 = disabled)", 0.0f, true, 0.0f, false, 100.0f);
 // PVE人类复活相关 ConVar
-CConVar<bool> g_cvarHumanRespawnEnable("zr_human_respawn_enable", FCVAR_NONE, "Enable human respawn in PVE mode", true);
+CConVar<bool> g_cvarHumanRespawnEnable("zr_human_respawn_enable", FCVAR_NONE, "Enable human respawn in PVE mode", false);
 CConVar<float> g_cvarHumanRespawnTime("zr_human_respawn_time", FCVAR_NONE, "Time in seconds before humans respawn in PVE mode", 10.0f, true, 0.0f, false, 0.0f);
 CConVar<bool> g_cvarHumanRespawnTeleport("zr_human_respawn_teleport", FCVAR_NONE, "Allow waiting humans to teleport to a teammate by pressing +reload", true);
-CConVar<float> g_cvarHumanRespawnFHBloodCost("zr_human_respawn_fh_blood_cost", FCVAR_NONE, "Amount of health cost for using !fh (0 to disable)", 10.0f, true, 0.0f, false, 0.0f);
-CConVar<float> g_cvarHumanRespawnFHTimeReduction("zr_human_respawn_fh_time_reduction", FCVAR_NONE, "Amount of time reduction (seconds) for using !fh", 5.0f, true, 0.0f, false, 0.0f);
+CConVar<bool> g_cvarHumanRespawnFHEnable("zr_human_respawn_fh_enable", FCVAR_NONE, "Enable !fh command to reduce teammate's respawn time", false);
+CConVar<float> g_cvarHumanRespawnFHTimePerHealth("zr_human_respawn_fh_time_per_health", FCVAR_NONE, "Seconds of respawn time reduction per 1 health donated", 0.5f, true, 0.0f, false, 0.0f);
+// 移除 g_cvarHumanRespawnFHBloodCost
 // meant only for offline config validation and can easily cause issues when used on live server
 #ifdef _DEBUG
 CON_COMMAND_F(zr_reload_classes, "- Reload ZR player classes", FCVAR_SPONLY | FCVAR_LINKED_CONCOMMAND)
@@ -2374,7 +2375,16 @@ CON_COMMAND_CHAT_FLAGS(revive, "- Revive a player", ADMFLAG_GENERIC)
 CON_COMMAND_CHAT(fh, "<amount> - Donate health to reduce a teammate's respawn time")
 {
 	if (!g_cvarZRPVEMode.Get() || !g_cvarHumanRespawnEnable.Get())
+	{
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "This command is not available.");
 		return;
+	}
+
+	if (!g_cvarHumanRespawnFHEnable.Get())
+	{
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "Donation is disabled.");
+		return;
+	}
 
 	if (!player)
 	{
@@ -2395,22 +2405,19 @@ CON_COMMAND_CHAT(fh, "<amount> - Donate health to reduce a teammate's respawn ti
 		return;
 	}
 
-	// 检查献血成本（血量）
-	float flHealthCost = g_cvarHumanRespawnFHBloodCost.Get();
-	if (flHealthCost > 0.0f)
+	// 检查献血者是否存活且有足够血量
+	CCSPlayerPawn* pDonorPawn = (CCSPlayerPawn*)player->GetPawn();
+	if (!pDonorPawn || !pDonorPawn->IsAlive())
 	{
-		CCSPlayerPawn* pPawn = (CCSPlayerPawn*)player->GetPawn();
-		if (!pPawn || !pPawn->IsAlive())
-		{
-			ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You must be alive to donate health.");
-			return;
-		}
-		if (pPawn->m_iHealth() < flHealthCost)
-		{
-			ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You don't have enough health (need %.0f).", flHealthCost);
-			return;
-		}
-		pPawn->m_iHealth(pPawn->m_iHealth() - flHealthCost);
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You must be alive to donate health.");
+		return;
+	}
+
+	int iDonorHealth = pDonorPawn->m_iHealth();
+	if (iDonorHealth <= iAmount)
+	{
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You don't have enough health (need %i).", iAmount);
+		return;
 	}
 
 	// 寻找当前等待复活时间最长的队友
@@ -2435,16 +2442,32 @@ CON_COMMAND_CHAT(fh, "<amount> - Donate health to reduce a teammate's respawn ti
 	if (!pTarget)
 		return;
 
-	// 减少复活时间
-	float flReduction = g_cvarHumanRespawnFHTimeReduction.Get();
+	// 计算减少的时间
+	float flReduction = (float)iAmount * g_cvarHumanRespawnFHTimePerHealth.Get();
 	g_flHumanRespawnRemaining[iTargetSlot] -= flReduction;
+
+	// 扣除献血者血量
+	pDonorPawn->m_iHealth(iDonorHealth - iAmount);
+
+	// 显示消息
+	ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You donated %i health to reduce %s's respawn time by %.1f seconds.", iAmount, pTarget->GetPlayerName(), flReduction);
+	ClientPrint(pTarget, HUD_PRINTTALK, ZR_PREFIX "%s donated %i health to reduce your respawn time by %.1f seconds.", player->GetPlayerName(), iAmount, flReduction);
+
+	// 如果剩余时间 ≤ 0，立即复活
 	if (g_flHumanRespawnRemaining[iTargetSlot] <= 0.0f)
 	{
-		// 立即复活
 		pTarget->Respawn();
 		g_bHumanWaitingRespawn[iTargetSlot] = false;
-		ClientPrint(pTarget, HUD_PRINTTALK, ZR_PREFIX "Your respawn time has been reduced to zero by %s!", player->GetPlayerName());
+		ClientPrint(pTarget, HUD_PRINTTALK, ZR_PREFIX "Your respawn time has been reduced to zero! You are now revived.");
 	}
-
-	ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You donated %.0f health to reduce %s's respawn time by %.1f seconds.", flHealthCost, pTarget->GetPlayerName(), flReduction);
+	else
+	{
+		// 更新 HUD 显示（可选）
+		if (ZEPlayer* pZEPlayer = pTarget->GetZEPlayer())
+		{
+			char szMsg[64];
+			V_snprintf(szMsg, sizeof(szMsg), "Respawning in %.1f seconds", g_flHumanRespawnRemaining[iTargetSlot]);
+			SendHudMessage(pZEPlayer, 10, EHudPriority::Normal, szMsg);
+		}
+	}
 }

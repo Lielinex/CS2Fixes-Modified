@@ -842,6 +842,13 @@ void CS2Fixes::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args)
 		ZR_Hook_ClientCommand_JoinTeam(slot, args);
 		RETURN_META(MRES_SUPERCEDE);
 	}
+
+	// PVE 模式：处理 +reload 按键（复活传送）
+	if (g_cvarEnableZR.Get() && slot != -1 && !V_strcmp(args[0], "reload"))
+	{
+		ZR_Hook_ClientCommand_Reload(slot, args);
+		RETURN_META(MRES_SUPERCEDE);
+	}
 }
 
 void CS2Fixes::Hook_ClientSettingsChanged(CPlayerSlot slot)

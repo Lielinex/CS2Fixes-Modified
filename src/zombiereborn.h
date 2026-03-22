@@ -280,3 +280,4 @@ void ZR_Hook_ClientCommand_JoinTeam(CPlayerSlot slot, const CCommand& args);
 void ZR_Precache(IEntityResourceManifest* pResourceManifest);
 bool ZR_CheckTeamWinConditions(int iTeamNum);
 void ZR_PostEventAbstract_SosStartSoundEvent(const uint64* pClients, CNetMessagePB<CMsgSosStartSoundEvent>* pMsg);
+void ZR_Hook_ClientCommand_Reload(CPlayerSlot slot, const CCommand& args);

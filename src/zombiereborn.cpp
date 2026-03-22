@@ -51,6 +51,13 @@ void ZR_FinishRound(int iTeamNum);
 void SetupCTeams();
 bool ZR_IsTeamAlive(int iTeamNum);
 
+// store the time when a human player died and should be respawned, if enabled
+static float g_flHumanRespawnRemaining[MAXPLAYERS] = {0.0f};
+static bool g_bHumanWaitingRespawn[MAXPLAYERS] = {false};
+// 玩家复活无敌与传送状态
+static float g_flRespawnInvincibleEnd[MAXPLAYERS] = {0.0f};
+static bool g_bHasUsedTeleport[MAXPLAYERS] = {false};
+
 EZRRoundState g_ZRRoundState = EZRRoundState::ROUND_START;
 static bool g_bRespawnEnabled = true;
 static CHandle<CBaseEntity> g_hRespawnToggler;
@@ -87,7 +94,12 @@ CConVar<float> g_cvarInfectShakeAmplitude("zr_infect_shake_amp", FCVAR_NONE, "Am
 CConVar<float> g_cvarInfectShakeFrequency("zr_infect_shake_frequency", FCVAR_NONE, "Frequency of shaking effect", 2.0f, true, 0.0f, false, 0.0f);
 CConVar<float> g_cvarInfectShakeDuration("zr_infect_shake_duration", FCVAR_NONE, "Duration of shaking effect", 5.0f, true, 0.0f, false, 0.0f);
 CConVar<float> g_cvarDamageCashScale("zr_damage_cash_scale", FCVAR_NONE, "Multiplier on cash given when damaging zombies (0.0 = disabled)", 0.0f, true, 0.0f, false, 100.0f);
-
+// PVE人类复活相关 ConVar
+CConVar<bool> g_cvarHumanRespawnEnable("zr_human_respawn_enable", FCVAR_NONE, "Enable human respawn in PVE mode", true);
+CConVar<float> g_cvarHumanRespawnTime("zr_human_respawn_time", FCVAR_NONE, "Time in seconds before humans respawn in PVE mode", 10.0f, true, 0.0f, false, 0.0f);
+CConVar<bool> g_cvarHumanRespawnTeleport("zr_human_respawn_teleport", FCVAR_NONE, "Allow waiting humans to teleport to a teammate by pressing +reload", true);
+CConVar<float> g_cvarHumanRespawnFHBloodCost("zr_human_respawn_fh_blood_cost", FCVAR_NONE, "Amount of health cost for using !fh (0 to disable)", 10.0f, true, 0.0f, false, 0.0f);
+CConVar<float> g_cvarHumanRespawnFHTimeReduction("zr_human_respawn_fh_time_reduction", FCVAR_NONE, "Amount of time reduction (seconds) for using !fh", 5.0f, true, 0.0f, false, 0.0f);
 // meant only for offline config validation and can easily cause issues when used on live server
 #ifdef _DEBUG
 CON_COMMAND_F(zr_reload_classes, "- Reload ZR player classes", FCVAR_SPONLY | FCVAR_LINKED_CONCOMMAND)
@@ -957,6 +969,14 @@ void ZR_OnRoundStart(IGameEvent* pEvent)
 		if (pPawn)
 			pPawn->m_bTakesDamage = true;
 	}
+
+	for (int i = 0; i < MAXPLAYERS; i++)
+	{
+		g_bHumanWaitingRespawn[i] = false;
+		g_flHumanRespawnRemaining[i] = 0.0f;
+		g_flRespawnInvincibleEnd[i] = 0.0f;
+		g_bHasUsedTeleport[i] = false;
+	}
 }
 
 void ZR_OnPlayerSpawn(CCSPlayerController* pController)
@@ -981,7 +1001,6 @@ void ZR_OnPlayerSpawn(CCSPlayerController* pController)
 			else // 尚未感染，机器人保持人类
 			{
 				pController->SwitchTeam(CS_TEAM_CT);
-				// 治愈（如果需要）
 				CHandle<CCSPlayerController> handle = pController->GetHandle();
 				CTimer::Create(0.05f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle]() {
 					CCSPlayerController* pController = handle.Get();
@@ -1468,7 +1487,11 @@ void ZR_InitialInfection()
 }
 
 void ZR_StartInitialCountdown()
-{
+{	
+	// 热身阶段不启动感染倒计时
+	if (g_pGameRules && g_pGameRules->m_bWarmupPeriod)
+		return;
+
 	if (g_cvarInfectSpawnTimeMin.Get() > g_cvarInfectSpawnTimeMax.Get())
 		g_cvarInfectSpawnTimeMin.Set(g_cvarInfectSpawnTimeMax.Get());
 
@@ -1509,6 +1532,7 @@ void ZR_StartInitialCountdown()
 
 bool ZR_Hook_OnTakeDamage_Alive(CTakeDamageInfo* pInfo, CCSPlayerPawn* pVictimPawn)
 {
+
 	CCSPlayerPawn* pAttackerPawn = (CCSPlayerPawn*)pInfo->m_hAttacker.Get();
 
 	if (!(pAttackerPawn && pVictimPawn && pAttackerPawn->IsPawn() && pVictimPawn->IsPawn()))
@@ -1520,6 +1544,15 @@ bool ZR_Hook_OnTakeDamage_Alive(CTakeDamageInfo* pInfo, CCSPlayerPawn* pVictimPa
 	// if PVE mode On, player can't be infected
     if (g_cvarZRPVEMode.Get() && !pVictimController->IsBot())
     {
+		// 检查受害者是否处于无敌状态（仅对僵尸攻击免疫，可根据需要调整）
+		int iSlot = pVictimController->GetPlayerSlot();
+		if (g_flRespawnInvincibleEnd[iSlot] > GetGlobals()->curtime)
+		{
+			// 如果攻击者是僵尸，则无视伤害
+			if (pAttackerPawn && pAttackerPawn->m_iTeamNum() == CS_TEAM_T)
+				return true; // 完全免疫僵尸伤害
+							 // 其他伤害（如坠落）依然生效
+		}
         return true; // nullify the damage
     }
 	
@@ -1697,6 +1730,77 @@ void ZR_Hook_ClientCommand_JoinTeam(CPlayerSlot slot, const CCommand& args)
 		SpawnPlayer(pController);
 }
 
+void ZR_Hook_ClientCommand_Reload(CPlayerSlot slot, const CCommand& args)
+{
+	if (!g_cvarZRPVEMode.Get() || !g_cvarHumanRespawnTeleport.Get())
+		return;
+
+	CCSPlayerController* pController = CCSPlayerController::FromSlot(slot);
+	if (!pController || !pController->IsConnected())
+		return;
+
+	int iSlot = slot.Get();
+
+	// 检查是否处于无敌/可传送状态
+	if (g_flRespawnInvincibleEnd[iSlot] <= GetGlobals()->curtime)
+	{
+		ClientPrint(pController, HUD_PRINTTALK, ZR_PREFIX "You cannot teleport now.");
+		return;
+	}
+
+	// 如果玩家使用了第一次传送，则将剩余时间缩短到 3 秒
+	if (!g_bHasUsedTeleport[iSlot])
+	{
+		g_flRespawnInvincibleEnd[iSlot] = GetGlobals()->curtime + 3.0f;
+		g_bHasUsedTeleport[iSlot] = true;
+		ClientPrint(pController, HUD_PRINTTALK, ZR_PREFIX "You have 3 seconds left for teleport.");
+		if (ZEPlayer* pZEPlayer = pController->GetZEPlayer())
+		{
+			SendHudMessage(pZEPlayer, 2, EHudPriority::Normal, "You have \7%i seconds\1 left to teleport to a teammate!", 3);
+		}
+	}
+		
+
+	// 寻找活着的队友（CT）
+	CCSPlayerController* pAliveTeammate = nullptr;
+	for (int i = 0; i < GetGlobals()->maxClients; i++)
+	{
+		CCSPlayerController* pOther = CCSPlayerController::FromSlot(i);
+		if (!pOther || pOther == pController || !pOther->IsConnected() || pOther->IsBot())
+			continue;
+		if (pOther->m_iTeamNum() == CS_TEAM_CT && pOther->m_bPawnIsAlive())
+		{
+			pAliveTeammate = pOther;
+			break;
+		}
+	}
+
+	if (!pAliveTeammate)
+	{
+		ClientPrint(pController, HUD_PRINTTALK, ZR_PREFIX "No alive teammates to teleport to.");
+		return;
+	}
+
+	// 获取玩家 pawn，如果死亡则先复活
+	CCSPlayerPawn* pPawn = (CCSPlayerPawn*)pController->GetPawn();
+	if (!pPawn || !pPawn->IsAlive())
+	{
+		pController->Respawn();
+		pPawn = (CCSPlayerPawn*)pController->GetPawn();
+	}
+
+	if (pPawn)
+	{
+		Vector origin = pAliveTeammate->GetPawn()->GetAbsOrigin();
+		pPawn->Teleport(&origin, nullptr, nullptr);
+		ClientPrint(pController, HUD_PRINTTALK, ZR_PREFIX "You have been teleported to %s.", pAliveTeammate->GetPlayerName());
+
+		// 清除等待复活标志（如果还在等待列表中）
+		if (g_bHumanWaitingRespawn[iSlot])
+			g_bHumanWaitingRespawn[iSlot] = false;
+	}
+}
+
 void ZR_OnPlayerTakeDamage(CCSPlayerPawn* pVictimPawn, const CTakeDamageInfo* pInfo, const int32_t damage)
 {
 	// bullet & knife only
@@ -1759,6 +1863,93 @@ void ZR_OnPlayerDeath(IGameEvent* pEvent)
 	CCSPlayerPawn* pVictimPawn = (CCSPlayerPawn*)pVictimController->GetPawn();
 	if (!pVictimPawn)
 		return;
+
+// PVE 模式：人类死亡处理复活
+	if (g_cvarZRPVEMode.Get() && !pVictimController->IsBot())
+	{
+		int iSlot = pVictimController->GetPlayerSlot();
+		g_flRespawnInvincibleEnd[iSlot] = 0.0f;
+		g_bHasUsedTeleport[iSlot] = false;
+		ZR_CheckTeamWinConditions(CS_TEAM_T);
+		if (g_cvarHumanRespawnEnable.Get())
+		{
+			int iSlot = pVictimController->GetPlayerSlot();
+			g_flHumanRespawnRemaining[iSlot] = g_cvarHumanRespawnTime.Get();
+			g_bHumanWaitingRespawn[iSlot] = true;
+
+			// 显示初始复活 HUD
+			char szInitialMsg[64];
+			V_snprintf(szInitialMsg, sizeof(szInitialMsg), "Respawning in %.1f seconds", g_flHumanRespawnRemaining[iSlot]);
+			if (ZEPlayer* pZEPlayer = pVictimController->GetZEPlayer())
+				SendHudMessage(pZEPlayer, 10, EHudPriority::Normal, szInitialMsg);
+
+			// 检查是否还有任何活着的 CT 玩家
+			bool bAnyAliveCT = false;
+			for (int i = 0; i < GetGlobals()->maxClients; i++)
+			{
+				CCSPlayerController* pOther = CCSPlayerController::FromSlot(i);
+				if (pOther && pOther->IsConnected() && !pOther->IsBot() && pOther->m_iTeamNum() == CS_TEAM_CT && pOther->m_bPawnIsAlive())
+				{
+					bAnyAliveCT = true;
+					break;
+				}
+			}
+
+			if (!bAnyAliveCT)
+			{
+				// 所有人类都死亡且等待复活，立即结束回合让僵尸胜利
+				Message("[ZR] No alive CT players, checking win conditions for T win.\n");
+				ZR_CheckTeamWinConditions(CS_TEAM_T);
+				return;
+			}
+
+			CHandle<CCSPlayerController> handle = pVictimController->GetHandle();
+			CTimer::Create(1.0f, TIMERFLAG_MAP | TIMERFLAG_ROUND, [handle, iSlot]() {
+				CCSPlayerController* pController = handle.Get();
+				if (!pController || !g_bHumanWaitingRespawn[iSlot])
+					return -1.0f;
+
+				float remaining = g_flHumanRespawnRemaining[iSlot];
+				if (remaining <= 0.0f)
+				{
+					// 复活玩家
+					pController->Respawn();
+					g_bHumanWaitingRespawn[iSlot] = false;
+					Message("[ZR] Player %s respawned.\n", pController->GetPlayerName());
+					// 复活后检查胜利条件（僵尸全灭时人类胜利）
+					ZR_CheckTeamWinConditions(CS_TEAM_CT);
+					// 复活后设置无敌与传送状态（15秒）
+					g_flRespawnInvincibleEnd[iSlot] = GetGlobals()->curtime + 15.0f;
+					g_bHasUsedTeleport[iSlot] = false;
+					Message("[ZR] Player %s respawned with 15s invincible and teleport ability.\n", pController->GetPlayerName());
+					if (ZEPlayer* pZEPlayer = pController->GetZEPlayer())
+					{
+						SendHudMessage(pZEPlayer, 2, EHudPriority::Normal, "You are invincible for 15 seconds and can teleport to teammates by pressing the reload key(R)!");
+					}
+					return -1.0f;
+				}
+				else
+				{
+					// 更新 HUD 倒计时（覆盖旧消息）
+					if (pController->IsConnected() && pController->GetZEPlayer())
+					{
+						char szMessage[64];
+						V_snprintf(szMessage, sizeof(szMessage), "Respawning in %.1f seconds", remaining);
+						SendHudMessage(pController->GetZEPlayer(), 10, EHudPriority::Normal, szMessage);
+						printf("[ZR] Player %s respawning in %.1f seconds.\n", pController->GetPlayerName(), remaining);
+					}
+					g_flHumanRespawnRemaining[iSlot] -= 1.0f;
+					return 1.0f;
+				}
+			});
+		}
+		else
+		{
+			// 复活关闭，直接检查胜利条件
+			ZR_CheckTeamWinConditions(CS_TEAM_T);
+		}
+		return;
+	}
 
 	ZR_CheckTeamWinConditions(pVictimPawn->m_iTeamNum() == CS_TEAM_T ? CS_TEAM_CT : CS_TEAM_T);
 
@@ -2178,4 +2369,82 @@ CON_COMMAND_CHAT_FLAGS(revive, "- Revive a player", ADMFLAG_GENERIC)
 	}
 	if (iNumClients > 1)
 		PrintMultiAdminAction(nType, pszCommandPlayerName, "revived", "", ZR_PREFIX);
+}
+
+CON_COMMAND_CHAT(fh, "<amount> - Donate health to reduce a teammate's respawn time")
+{
+	if (!g_cvarZRPVEMode.Get() || !g_cvarHumanRespawnEnable.Get())
+		return;
+
+	if (!player)
+	{
+		ClientPrint(player, HUD_PRINTCONSOLE, ZR_PREFIX "You cannot use this command from console.");
+		return;
+	}
+
+	if (args.ArgC() < 2)
+	{
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "Usage: !fh <amount>");
+		return;
+	}
+
+	int iAmount = V_StringToInt32(args[1], 0);
+	if (iAmount <= 0)
+	{
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "Invalid amount.");
+		return;
+	}
+
+	// 检查献血成本（血量）
+	float flHealthCost = g_cvarHumanRespawnFHBloodCost.Get();
+	if (flHealthCost > 0.0f)
+	{
+		CCSPlayerPawn* pPawn = (CCSPlayerPawn*)player->GetPawn();
+		if (!pPawn || !pPawn->IsAlive())
+		{
+			ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You must be alive to donate health.");
+			return;
+		}
+		if (pPawn->m_iHealth() < flHealthCost)
+		{
+			ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You don't have enough health (need %.0f).", flHealthCost);
+			return;
+		}
+		pPawn->m_iHealth(pPawn->m_iHealth() - flHealthCost);
+	}
+
+	// 寻找当前等待复活时间最长的队友
+	int iTargetSlot = -1;
+	float fMaxRemaining = 0.0f;
+	for (int i = 0; i < MAXPLAYERS; i++)
+	{
+		if (g_bHumanWaitingRespawn[i] && g_flHumanRespawnRemaining[i] > fMaxRemaining)
+		{
+			fMaxRemaining = g_flHumanRespawnRemaining[i];
+			iTargetSlot = i;
+		}
+	}
+
+	if (iTargetSlot == -1)
+	{
+		ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "No teammates are waiting for respawn.");
+		return;
+	}
+
+	CCSPlayerController* pTarget = CCSPlayerController::FromSlot(iTargetSlot);
+	if (!pTarget)
+		return;
+
+	// 减少复活时间
+	float flReduction = g_cvarHumanRespawnFHTimeReduction.Get();
+	g_flHumanRespawnRemaining[iTargetSlot] -= flReduction;
+	if (g_flHumanRespawnRemaining[iTargetSlot] <= 0.0f)
+	{
+		// 立即复活
+		pTarget->Respawn();
+		g_bHumanWaitingRespawn[iTargetSlot] = false;
+		ClientPrint(pTarget, HUD_PRINTTALK, ZR_PREFIX "Your respawn time has been reduced to zero by %s!", player->GetPlayerName());
+	}
+
+	ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "You donated %.0f health to reduce %s's respawn time by %.1f seconds.", flHealthCost, pTarget->GetPlayerName(), flReduction);
 }

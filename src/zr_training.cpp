@@ -132,6 +132,7 @@ static float Tick()
 	{
 		Invalidate("bot-missing");
 		s_botSlot = -1;
+		s_nextBot = g_flUniversalTime + 5;
 	}
 	if (!s_bot.Get() || !s_bot->IsConnected())
 	{
@@ -184,6 +185,7 @@ void ZR_TrainingPrepare()
 	const bool enabled = g_cvarEnableZR.Get() && s_enable.Get();
 	s_policy.Begin(enabled); s_explicitSpawn = {}; s_suppressDeath = false; s_restartQueued = false;
 	s_hadHumans = Humans() > 0;
+	if (enabled && (!s_bot.Get() || !s_bot->IsConnected())) s_nextBot = g_flUniversalTime + 5;
 	if (!enabled)
 	{
 		s_bot = {}; s_botSlot = -1;
@@ -205,7 +207,7 @@ void ZR_TrainingDisconnect(CPlayerSlot slot)
 	if (!s_policy.Enabled()) return;
 	if (slot.Get() == s_botSlot)
 	{
-		Invalidate("bot-disconnect"); s_bot = {}; s_botSlot = -1;
+		Invalidate("bot-disconnect"); s_bot = {}; s_botSlot = -1; s_nextBot = g_flUniversalTime + 5;
 	}
 	if (!Humans()) { Invalidate("server-empty"); s_hadHumans = false; }
 }

@@ -53,6 +53,7 @@ for sdk_target in MMSPlugin.sdk_targets:
     'src/entwatch.cpp',
     'src/user_preferences.cpp',
     'src/zombiereborn.cpp',
+    'src/zr_training.cpp',
     'src/customio.cpp',
     'src/entitylistener.cpp',
     'src/leader.cpp',

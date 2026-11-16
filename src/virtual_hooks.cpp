@@ -55,6 +55,7 @@
 #include "usermessages.pb.h"
 #include "votemanager.h"
 #include "zombiereborn.h"
+#include "zr_training.h"
 
 #include "tier0/memdbgon.h"
 
@@ -235,6 +236,7 @@ KHook::Return<void> Hook_ClientActive_Post(IServerGameClients* pThis, CPlayerSlo
 
 KHook::Return<void> Hook_ClientDisconnect_Post(IServerGameClients* pThis, CPlayerSlot slot, ENetworkDisconnectionReason reason, const char* pszName, uint64 xuid, const char* pszNetworkID)
 {
+	ZR_TrainingDisconnect(slot);
 	Message("Hook_ClientDisconnect(%d, %d, \"%s\", %lli)\n", slot, reason, pszName, xuid);
 
 	CCSPlayerController* player = CCSPlayerController::FromSlot(slot);
@@ -301,6 +303,11 @@ KHook::Return<void> Hook_OnClientConnected(IServerGameClients* pThis, CPlayerSlo
 
 KHook::Return<bool> Hook_ClientConnect(IServerGameClients* pThis, CPlayerSlot slot, const char* pszName, uint64 xuid, const char* pszNetworkID, bool unk1, CBufferString* pRejectReason)
 {
+	if (!ZR_TrainingReserveSlot(slot, xuid))
+	{
+		pRejectReason->CopyFrom("One slot is reserved for the ZE training bot.");
+		return {KHook::Action::Supersede, false};
+	}
 	Message("Hook_ClientConnect(%d, \"%s\", %lli, \"%s\", %d, \"%s\")\n", slot, pszName, xuid, pszNetworkID, unk1, pRejectReason->Get());
 
 	// Player is banned

@@ -54,6 +54,7 @@
 #include "virtual_hooks.h"
 #include "votemanager.h"
 #include "zombiereborn.h"
+#include "zr_training.h"
 
 #include "tier0/memdbgon.h"
 
@@ -369,6 +370,7 @@ void CS2Fixes::OnLevelInit(char const* pMapName,
 	g_pMapVoteSystem->OnLevelInit(pMapName);
 	g_pConvarWhitelist->ApplyToGameTable(pMapName);
 
+	ZR_TrainingLevelInit();
 	if (g_cvarEnableZR.Get())
 		ZR_OnLevelInit();
 

@@ -1,5 +1,5 @@
 #requires -Version 7.0
-param([string]$ToolchainRoot='C:\CS2\.build\cs2fixes-toolchain', [int]$Jobs=4)
+param([string]$ToolchainRoot='C:\CS2\.build\cs2fixes-toolchain', [int]$Jobs=4, [switch]$TestTrainingPolicy)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $setup=Join-Path $ToolchainRoot 'msvc/setup_x64.bat'
@@ -23,6 +23,18 @@ $env:TEMP=$temp
 $env:TMP=$temp
 $env:PYTHONUTF8='1'
 $env:PYTHONIOENCODING='utf-8'
+if ($TestTrainingPolicy) {
+    $testDir=Join-Path $root 'build/training-policy-tests'
+    New-Item -ItemType Directory -Path $testDir -Force | Out-Null
+    Push-Location $testDir
+    try {
+        & cl /nologo /std:c++20 /EHsc /W4 /Fe:policy-tests.exe (Join-Path $root 'tests/ZrTrainingPolicy.cpp')
+        if ($LASTEXITCODE -ne 0) { throw 'Training policy test compilation failed' }
+        & ./policy-tests.exe
+        if ($LASTEXITCODE -ne 0) { throw 'Training policy tests failed' }
+    } finally { Pop-Location }
+    return
+}
 $build=Join-Path $root 'build'
 New-Item -ItemType Directory -Path $build -Force | Out-Null
 Push-Location $build

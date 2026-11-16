@@ -34,6 +34,7 @@
 #include "topdefender.h"
 #include "votemanager.h"
 #include "zombiereborn.h"
+#include "zr_training.h"
 
 #include "tier0/memdbgon.h"
 
@@ -66,6 +67,7 @@ void UnregisterEventListeners()
 GAME_EVENT_F(round_prestart)
 {
 	RemoveTimers(TIMERFLAG_ROUND);
+	ZR_TrainingPrepare();
 
 	EntityHandler_OnRoundRestart();
 
@@ -88,6 +90,11 @@ CConVar<bool> g_cvarBlockTeamMessages("cs2f_block_team_messages", FCVAR_NONE, "W
 
 GAME_EVENT_F(player_team)
 {
+	if (ZR_TrainingEnabled())
+	{
+		auto p = static_cast<CCSPlayerController*>(pEvent->GetPlayerController("userid"));
+		if (p && !p->IsBot() && !p->m_bIsHLTV && p->m_iTeamNum() == CS_TEAM_T) p->SwitchTeam(CS_TEAM_CT);
+	}
 	// Remove chat message for team changes
 	if (g_cvarBlockTeamMessages.Get())
 		pEvent->SetBool("silent", true);

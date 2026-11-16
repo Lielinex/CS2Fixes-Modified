@@ -1,0 +1,4 @@
+// Server-specific training mode. Also install matching ZEP caszep.7 observer.
+zr_enable 1
+zr_training_enable 1
+// Changes take effect next round; mp_restartgame 1 applies them immediately.

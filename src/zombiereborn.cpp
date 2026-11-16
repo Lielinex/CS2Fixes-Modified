@@ -38,6 +38,7 @@
 #include "utils/entity.h"
 #include "vendor/nlohmann/json.hpp"
 #include "zombiereborn.h"
+#include "zr_training.h"
 #include <fstream>
 #include <sstream>
 
@@ -859,6 +860,8 @@ void ZR_RespawnAll()
 
 		if (!pController || pController->m_bIsHLTV || (pController->m_iTeamNum() != CS_TEAM_CT && pController->m_iTeamNum() != CS_TEAM_T))
 			continue;
+		if (ZR_TrainingEnabled() && !pController->IsBot())
+			continue;
 		pController->Respawn();
 	}
 }
@@ -937,10 +940,14 @@ void SetupCTeams()
 
 void ZR_OnRoundStart(IGameEvent* pEvent)
 {
+	ZR_TrainingStart();
 	SetupRespawnToggler();
-	ClientPrintAll(HUD_PRINTTALK, ZR_PREFIX "The game is \x05Humans vs. Zombies\x01, the goal for zombies is to infect all humans by knifing them.");
+	if (ZR_TrainingEnabled())
+		ClientPrintAll(HUD_PRINTTALK, ZR_PREFIX "ZE training: humans stay CT; dead or late players wait for the next round.");
+	else
+		ClientPrintAll(HUD_PRINTTALK, ZR_PREFIX "The game is \x05Humans vs. Zombies\x01, the goal for zombies is to infect all humans by knifing them.");
 
-	if (g_cvarInfectSpawnWarning.Get() && g_cvarInfectSpawnType.Get() == (int)EZRSpawnType::IN_PLACE)
+	if (!ZR_TrainingEnabled() && g_cvarInfectSpawnWarning.Get() && g_cvarInfectSpawnType.Get() == (int)EZRSpawnType::IN_PLACE)
 		ClientPrintAll(HUD_PRINTTALK, ZR_PREFIX "Classic spawn is enabled! Zombies will be \x07spawning between humans\x01!");
 
 	if (!GetGlobals())
@@ -963,8 +970,9 @@ void ZR_OnRoundStart(IGameEvent* pEvent)
 
 void ZR_OnPlayerSpawn(CCSPlayerController* pController)
 {
+	if (!ZR_TrainingSpawn(pController)) return;
 	// delay infection a bit
-	bool bInfect = g_ZRRoundState == EZRRoundState::POST_INFECTION;
+	bool bInfect = g_ZRRoundState == EZRRoundState::POST_INFECTION && (!ZR_TrainingEnabled() || pController->IsBot());
 
 	// We're infecting this guy with a delay, disable all damage as they have 100 hp until then
 	// also set team immediately in case the spawn teleport is team filtered
@@ -1190,6 +1198,8 @@ void ZR_Infect(CCSPlayerController* pAttackerController, CCSPlayerController* pV
 	// This can be null if the victim disconnected right before getting hit AND someone joined in their place immediately, thus replacing the controller
 	if (!pVictimController)
 		return;
+	if (ZR_TrainingEnabled() && !pVictimController->IsBot())
+		return;
 
 	if (pVictimController->m_iTeamNum() == CS_TEAM_CT)
 		pVictimController->SwitchTeam(CS_TEAM_T);
@@ -1226,6 +1236,7 @@ void ZR_Infect(CCSPlayerController* pAttackerController, CCSPlayerController* pV
 
 void ZR_InfectMotherZombie(CCSPlayerController* pVictimController, std::vector<SpawnPoint*> spawns)
 {
+	if (ZR_TrainingEnabled() && !pVictimController->IsBot()) return;
 	CCSPlayerPawn* pVictimPawn = (CCSPlayerPawn*)pVictimController->GetPawn();
 	if (!pVictimPawn)
 		return;
@@ -1273,6 +1284,7 @@ void ZR_InfectMotherZombie(CCSPlayerController* pVictimController, std::vector<S
 // the variable gets decreased by 20 every round
 void ZR_InitialInfection()
 {
+	if (ZR_TrainingInitialInfection()) return;
 	if (!GetGlobals())
 		return;
 
@@ -1391,6 +1403,7 @@ void ZR_StartInitialCountdown()
 			return -1.0f;
 
 		int g_iInfectionCountDown = g_cvarInfectSpawnTimeMin.Get() + (iRand % (g_cvarInfectSpawnTimeMax.Get() - g_cvarInfectSpawnTimeMin.Get() + 1));
+		if (ZR_TrainingEnabled()) g_iInfectionCountDown = 3;
 		g_iInfectionCountDown -= *iSecondsElapsed;
 
 		if (g_iInfectionCountDown <= 0)
@@ -1403,7 +1416,7 @@ void ZR_StartInitialCountdown()
 		{
 			char classicSpawnMsg[256];
 
-			if (g_cvarInfectSpawnWarning.Get() && g_cvarInfectSpawnType.Get() == (int)EZRSpawnType::IN_PLACE)
+			if (!ZR_TrainingEnabled() && g_cvarInfectSpawnWarning.Get() && g_cvarInfectSpawnType.Get() == (int)EZRSpawnType::IN_PLACE)
 				V_snprintf(classicSpawnMsg, sizeof(classicSpawnMsg), "<span color='#940000'>WARNING: </span><span color='#FF3333'>Zombies will spawn between humans!</span><br>\u00A0<br>");
 			else
 				V_snprintf(classicSpawnMsg, sizeof(classicSpawnMsg), "");
@@ -1429,7 +1442,8 @@ bool ZR_Hook_OnTakeDamage_Alive(CTakeDamageInfo* pInfo, CCSPlayerPawn* pVictimPa
 	CCSPlayerController* pAttackerController = CCSPlayerController::FromPawn(pAttackerPawn);
 	CCSPlayerController* pVictimController = CCSPlayerController::FromPawn(pVictimPawn);
 	const char* pszAbilityClass = pInfo->m_hAbility.Get() ? pInfo->m_hAbility.Get()->GetClassname() : "";
-	if (pAttackerPawn->m_iTeamNum() == CS_TEAM_T && pVictimPawn->m_iTeamNum() == CS_TEAM_CT && !V_strncmp(pszAbilityClass, "weapon_knife", 12))
+	if (pAttackerPawn->m_iTeamNum() == CS_TEAM_T && pVictimPawn->m_iTeamNum() == CS_TEAM_CT && !V_strncmp(pszAbilityClass, "weapon_knife", 12)
+		&& (!ZR_TrainingEnabled() || (pVictimController && pVictimController->IsBot())))
 	{
 		ZR_Infect(pAttackerController, pVictimController, false);
 		return true; // nullify the damage
@@ -1550,6 +1564,11 @@ bool ZR_Detour_CEntityIdentity_AcceptInput(CEntityIdentity* pThis, CUtlSymbolLar
 
 void SpawnPlayer(CCSPlayerController* pController)
 {
+	if (ZR_TrainingEnabled() && !pController->IsBot())
+	{
+		ZR_TrainingJoin(pController);
+		return;
+	}
 	pController->ChangeTeam(g_ZRRoundState == EZRRoundState::POST_INFECTION ? CS_TEAM_T : CS_TEAM_CT);
 
 	// Make sure the round ends if spawning into an empty server
@@ -1587,6 +1606,13 @@ void ZR_Hook_ClientCommand_JoinTeam(CPlayerSlot slot, const CCommand& args)
 	CCSPlayerController* pController = CCSPlayerController::FromSlot(slot);
 	if (!pController)
 		return;
+	if (ZR_TrainingEnabled() && !pController->IsBot())
+	{
+		if (args.ArgC() < 2) return;
+		if (!V_strcmp(args.Arg(1), "1")) pController->ChangeTeam(CS_TEAM_SPECTATOR);
+		else if (pController->m_iTeamNum() != CS_TEAM_CT) ZR_TrainingJoin(pController);
+		return;
+	}
 
 	CCSPlayerPawn* pPawn = (CCSPlayerPawn*)pController->GetPawn();
 	if (pPawn && pPawn->IsAlive())
@@ -1657,6 +1683,8 @@ void ZR_OnPlayerDeath(IGameEvent* pEvent)
 	CCSPlayerController* pVictimController = (CCSPlayerController*)pEvent->GetPlayerController("userid");
 	if (!pVictimController)
 		return;
+	if (ZR_TrainingSuppressDeath()) return;
+	ZR_TrainingDeath(pVictimController);
 	CCSPlayerPawn* pVictimPawn = (CCSPlayerPawn*)pVictimController->GetPawn();
 	if (!pVictimPawn)
 		return;
@@ -1665,6 +1693,7 @@ void ZR_OnPlayerDeath(IGameEvent* pEvent)
 
 	if (pVictimPawn->m_iTeamNum() == CS_TEAM_T && g_ZRRoundState == EZRRoundState::POST_INFECTION)
 		pVictimPawn->EmitSound("zr.amb.zombie_die");
+	if (ZR_TrainingEnabled() && !pVictimController->IsBot()) return;
 
 	// respawn player
 	CHandle<CCSPlayerController> handle = pVictimController->GetHandle();
@@ -1711,6 +1740,7 @@ bool ZR_IsTeamAlive(int iTeamNum)
 // check whether a team has won the round, if so, end the round and incre score
 bool ZR_CheckTeamWinConditions(int iTeamNum)
 {
+	if (!ZR_TrainingCanWin()) return false;
 	if (g_ZRRoundState == EZRRoundState::ROUND_END || (iTeamNum == CS_TEAM_CT && g_bRespawnEnabled) || (iTeamNum != CS_TEAM_T && iTeamNum != CS_TEAM_CT))
 		return false;
 
@@ -2017,6 +2047,17 @@ CON_COMMAND_CHAT_FLAGS(infect, "- Infect a player", ADMFLAG_GENERIC)
 
 	if (!g_playerManager->CanTargetPlayers(player, args[1], iNumClients, pSlots, NO_TERRORIST | NO_DEAD, nType))
 		return;
+	if (ZR_TrainingEnabled())
+	{
+		int bots = 0;
+		for (int i = 0; i < iNumClients; ++i)
+		{
+			auto target = CCSPlayerController::FromSlot(pSlots[i]);
+			if (target && target->IsBot()) pSlots[bots++] = pSlots[i];
+		}
+		iNumClients = bots;
+		if (!bots) { ClientPrint(player, HUD_PRINTTALK, ZR_PREFIX "Training mode cannot infect humans."); return; }
+	}
 
 	std::string strCommandPlayerName = player ? player->GetPlayerName() : CONSOLE_NAME;
 	std::vector<SpawnPoint*> spawns = ZR_GetSpawns();
@@ -2032,7 +2073,7 @@ CON_COMMAND_CHAT_FLAGS(infect, "- Infect a player", ADMFLAG_GENERIC)
 		CCSPlayerController* pTarget = CCSPlayerController::FromSlot(pSlots[i]);
 		CCSPlayerPawn* pPawn = (CCSPlayerPawn*)pTarget->GetPawn();
 
-		if (g_ZRRoundState == EZRRoundState::ROUND_START)
+		if (g_ZRRoundState == EZRRoundState::ROUND_START && !ZR_TrainingEnabled())
 			ZR_InfectMotherZombie(pTarget, spawns);
 		else
 			ZR_Infect(pTarget, pTarget, true);
@@ -2043,8 +2084,8 @@ CON_COMMAND_CHAT_FLAGS(infect, "- Infect a player", ADMFLAG_GENERIC)
 	if (iNumClients > 1)
 		PrintMultiAdminAction(nType, strCommandPlayerName, "infected", g_ZRRoundState == EZRRoundState::ROUND_START ? " as mother zombies" : "", ZR_PREFIX);
 
-	// Note we skip MZ immunity when first infection is manually triggered
-	if (g_ZRRoundState == EZRRoundState::ROUND_START)
+	// A training admin command must not cancel the native initial infection countdown.
+	if (g_ZRRoundState == EZRRoundState::ROUND_START && !ZR_TrainingEnabled())
 	{
 		if (g_cvarRespawnDelay.Get() < 0.0f)
 			g_bRespawnEnabled = false;

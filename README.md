@@ -1,5 +1,7 @@
 # CS2Fixes
 
+本仓库为 Lielinex 的服务器专用维护分支。ZE训练规则、ZEP迁移与控制台接口见 [训练ZR说明](docs/TRAINING_ZR.md)，已确认设计见 [设计记录](docs/TRAINING_ZR_DESIGN.md)。开发在 `dev`，通过验证后推送本仓库；上游仅用于读取更新。上游项目介绍保留如下。
+
 CS2Fixes is a Metamod plugin with fixes and features aimed but not limited to zombie escape. This project also serves as a good example and help for source2mod and other developers.
 
 ## Installation
@@ -22,7 +24,7 @@ The CS2Fixes name comes from the CSSFixes and CSGOFixes projects, which were pri
 ## Compilation
 
 ```
-git clone https://github.com/Source2ZE/CS2Fixes/ && cd CS2Fixes
+git clone --branch dev https://github.com/Lielinex/CS2Fixes-Modified/ && cd CS2Fixes-Modified
 git submodule update --init --recursive
 ```
 ### Docker (easiest)

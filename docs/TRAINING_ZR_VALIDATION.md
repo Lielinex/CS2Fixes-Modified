@@ -4,13 +4,14 @@
 
 原生CS2Fixes实现独立训练开关、唯一训练机器人、冻结结束后3秒感染、所有入口排除真人、10秒入场窗口和SteamID回合死亡限制、授权一次性复活、地图控制的机器人重生、空服首人新回合、异常回合失效与恢复。普通ZR保留。ZEP caszep.7迁移为原生protocol 1观察器，保留实际CT胜利上报及PMC恢复，训练复位先复活再传送；共享能力接口源码快照随ZEP仓库维护。
 
-SDK更新独立提交`0a55951`，SDK gitlink为`2283c1f919cb7b75329eb059ef6b064b36c2fdaa`。训练功能及ZEP改动分别记录在Lielinex对应仓库的dev。没有修改CS2Fixes SDK内部源码、第三方插件或业务数据库。
+SDK更新独立提交`0a55951`，SDK gitlink为`2283c1f919cb7b75329eb059ef6b064b36c2fdaa`。训练主体提交`f964e73`，机器人创建竞争修复及验证脚本提交`5e3996f`；配套ZEP提交`dec79d7`。没有修改CS2Fixes SDK内部源码、第三方插件或业务数据库。
 
 ## 已通过的自动验证
 
 - 原生Windows x64 Release构建成功。仍有原工程及SDK的转换、编码、PDB等警告，不宣称无警告。
 - 原生入场/死亡策略17项断言：10秒精确边界、死亡后窗口内重连、重复出生、晚加入、授权复位与一次性豁免、跨回合清理、异常状态不可当前回合重激活。
 - ZEP Release构建成功，0错误0警告；采用仓库内共享接口快照构建。共享Contracts.cs与现有平台源码SHA256均为`F163855EEC029E7FA30799B0B9E7689B130422155DC0DEC82A90475372D1497F`。
+- 从ZEP提交`dec79d7`执行git archive到独立空目录后重新构建成功，0错误0警告，确认不需要本地未提交源文件或同级未发布工程。日志`C:/CS2/.build/zr-training-zep-clean-build.log`。
 - 原生观察器31项断言：实际CT胜利、感染前/普通ZR/异常回合拒绝、无合格存活者拒绝、重复事件与跨地图旧事件、后续回合恢复及热重载沿用后端去重键。
 - CSS实际能力注册接口8项断言：替换旧provider、热重载及卸载隔离。
 - 静默聊天152项检查通过；平台86项断言通过，含业务日05:00、首通/历史计数、事件重放、身份授权、模型应用等既有业务回归。
@@ -24,7 +25,11 @@ SDK更新独立提交`0a55951`，SDK gitlink为`2283c1f919cb7b75329eb059ef6b064b
 
 测试先后发现并修复：空服初始地图不保证触发round_prestart，需要地图配置加载后的启动路径；引擎配额创建与无导航补建可能并发，必须保留唯一机器人并在清理多余机器人前使当前回合失效；异常恢复不能等机器人在地图已禁用重生时先自行复活。
 
-最终源码提交对应DLL的测试证据、SHA256及交付包位置将在最终构建后补齐。开发过程证据保存在`C:/CS2/.build/cs2fixes-update-20261113/training1-*`。
+最终源码`5e3996f`构建的DLL版本为`v2.1-3-5e3996f-training.1`，SHA256为`40CE9BAD7A014E19F24042E3FB3E85887E2B5B0CFAAF74D7B11CAA0E814A0DD5`。配套ZEP DLL SHA256为`AD0F34A498BBB1779C77AA4EB5717B1F7A0831333D7EAED377D748D9B721F08B`。
+
+最终隔离证据：`C:/CS2/.build/cs2fixes-update-20261113/training1-delivery-20261117-054314/result.json`；脚本`Assert-TrainingSmoke.ps1`的10项断言全部通过，结果`C:/CS2/.build/zr-training-smoke-assertions.json`。包含11条管理指令查询，重开/普通ZR切换/恢复训练/踢机器人后补建/换图均成功，进程未崩溃，临时gamedata恢复成功，测试进程已退出。空服轮可能原本已无效，因此“机器人移除保护”断言接受原本已无效或移除当时变无效，不能解释为已经验证有真人的有效训练回合掉线。
+
+成组交付包：`C:/CS2/plugins_dev/CS2Fixes-Modified/package/ZE-Training-training.1-windows-x64-20261117.zip`，内含DLL/PDB、gamedata、配置示例、迁移说明、对应源码快照及校验清单。SDK子模块按gitlink另行获取。开发过程证据保存在`C:/CS2/.build/cs2fixes-update-20261113/training1-*`。
 
 ## 尚需真人与实服验证
 

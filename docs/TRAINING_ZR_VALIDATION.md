@@ -19,6 +19,14 @@ SDK更新独立提交`0a55951`，SDK gitlink为`2283c1f919cb7b75329eb059ef6b064b
 
 本机日志：`C:/CS2/.build/zr-training-build.log`、`zr-training-policy-test.log`、`zr-training-zep-build.log`、`zr-training-observer-test.log`、`zr-training-capability-test.log`、`zr-training-chat-test.log`、`zr-training-platform-test.log`。
 
+## 上游维护同步（2026-11-26）
+
+用户要求参考Source2ZE上游更新。只读拉取`upstream/main`至`2219d747ca1bf4bcfd3525e11dd76c721a16ca5c`，SDK子模块同步至`64de8f6101e0697d935ff607b2da4e7dd3bc94c7`。此为本服务器专用分支上的上游合并；没有向Source2ZE仓库推送。
+
+合入的上游更新包括SDK实体创建API迁移、2026-11-04 gamedata、移动push实体trace过滤、round restart默认实体重复修复、消息网络API更新、实体/回合/连接生命周期调整，以及EntWatch的CustomHud资源与JSONC配置迁移。上游ZR现有配置格式会在旧KV配置缺少时自动生成JSONC并将旧文件改名保留。训练ZR策略、机器人和真人死亡/感染限制均保留；重生relay按新SDK创建方法更新。冲突仅为`Hook_PostEventAbstract`已从SDK获取`NetMessageInfo_t*`改为直接接收该类型，保留本分支既有新签名。
+
+验证：`Build-Local.ps1 -TestTrainingPolicy`通过17项；全量Windows x64 Release构建成功。仍有SDK头文件代码页、类型转换、/Zi与/Z7重复及依赖PDB缺失等构建警告。当前只完成编译与策略单测；未启动游戏服务器做隔离smoke或真人实服验证。
+
 ## 隔离原生服务器验证
 
 使用127.0.0.1:27025、仅加载原生CS2Fixes，地图de_dust2，不使用正式服令牌或正式管理通道。每次测试退出进程并按哈希恢复临时gamedata。正常管理命令查询可用，插件无崩溃，普通/训练开关不会在当前回合即时切换，机器人被踢后可补建，换图后可重新启动维护。
